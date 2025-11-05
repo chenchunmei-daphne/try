@@ -1,1 +1,3 @@
-print("111")
+import torch
+
+x = torch.tensor([1, 2, 3])
