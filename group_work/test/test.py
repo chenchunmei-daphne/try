@@ -1,89 +1,89 @@
+import math
+import pandas as pd
+import numpy as np
 import torch
-# 准备分类模型
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, TensorDataset
+import seaborn as sns
 
-classification_models = {
-    "Decision Tree Classification": DecisionTreeClassifier(random_state=42),
-    "MLP Classification": MLPClassifier(hidden_layer_sizes=(50, 25), activation='relu', solver='adam', 
-                                      batch_size=32, max_iter=1000, random_state=42),
-    "K-Neighbors Classification": KNeighborsClassifier(n_neighbors=5)
-}
+data = pd.read_csv("insurance_data_preprocessed.csv")
 
-flag_standard_classification = True  # 是否标准化特征
 
-def classification_train(X_train, X_test, models, y_train=y_train, y_test=y_test):
-    n_models = len(models)
-    n_cols = 3
-    n_rows = (n_models + n_cols - 1) // n_cols
+
+X = data.drop(['avg_claim_amount', 'total_claims_paid', 'annual_medical_cost', 'claims_count', 'risk_score', 'is_high_risk'], axis=1, errors='ignore')
+y = data.get(['risk_score', 'is_high_risk'])
+X.info()
+# 划分训练集和测试集
+X_train0, X_test0, y_train0, y_test0 = train_test_split(
+    X, y, 
+    test_size=0.2,  # 测试集比例
+    random_state=42,  # 随机种子，确保可重复性
+    stratify=y['is_high_risk']  # 按高风险标签分层抽样
+)
+
+# 转换为PyTorch张量
+X_train = torch.FloatTensor(X_train0.values)
+X_test = torch.FloatTensor(X_test0.values)
+y_train = torch.FloatTensor(y_train0.values)
+y_test = torch.FloatTensor(y_test0.values) 
+
+
+
+# 创建数据集
+train_dataset = TensorDataset(X_train, y_train)
+
+# 创建数据加载器
+batch_size = 32
+train_loader = DataLoader(
+    train_dataset, 
+    batch_size=batch_size, 
+    shuffle=True,  # 每个epoch打乱数据
+    num_workers=1 # 多进程加载数据
+)
+
+
+class MultiTaskRiskNet(nn.Module):
+    def __init__(self, input_size, share_hidden=[128, 64], regress_hidden=[32, 1], class_hidden=[32, 1], dropout_rate=0.3):
+        super(MultiTaskRiskNet, self).__init__()
+        
+        # 共享的特征提取层
+        self.shared_layers = nn.Sequential(
+            nn.Linear(input_size, share_hidden[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(share_hidden[0], share_hidden[1]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # 回归分支：预测风险评分 (0~1)
+        self.regression_branch = nn.Sequential(
+            nn.Linear(share_hidden[1], regress_hidden[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(regress_hidden[0], regress_hidden[1]),
+            nn.Sigmoid()  # 输出在0~1之间
+        )
+        
+        # 分类分支：现在输入维度是 share_hidden[1] + 1（增加了风险评分特征）
+        self.classification_branch = nn.Sequential(
+            nn.Linear(share_hidden[1] + 1, class_hidden[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(class_hidden[0], class_hidden[1]),
+            nn.Sigmoid()  # 输出概率
+        )
     
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 5*n_rows))
-    if n_models == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
+    def forward(self, x):
+        # 共享特征提取
+        shared_features = self.shared_layers(x)
     
-    for idx, (name, model) in enumerate(models.items()):
-        time_start = time.time()
-        model.fit(X_train, y_train)
+        risk_score = self.regression_branch(shared_features)  # 连续评分
         
-        # 训练集预测和评估
-        y_train_pred = model.predict(X_train)
-        accuracy_train = accuracy_score(y_train, y_train_pred)
-        precision_train = precision_score(y_train, y_train_pred, average='weighted', zero_division=0)
-        recall_train = recall_score(y_train, y_train_pred, average='weighted', zero_division=0)
-        f1_train = f1_score(y_train, y_train_pred, average='weighted', zero_division=0)
+        # 将共享特征和预测的风险评分拼接作为分类分支的输入
+        features = torch.cat([shared_features, risk_score], dim=-1)  # 修正：dim=-1
+        risk_class_prob = self.classification_branch(features)  # 分类概率
         
-        # 测试集预测和评估
-        predictions = model.predict(X_test)
-        accuracy_test = accuracy_score(y_test, predictions)
-        precision_test = precision_score(y_test, predictions, average='weighted', zero_division=0)
-        recall_test = recall_score(y_test, predictions, average='weighted', zero_division=0)
-        f1_test = f1_score(y_test, predictions, average='weighted', zero_division=0)
-        
-        # 绘制混淆矩阵
-        cm = confusion_matrix(y_test, predictions)
-        ax = axes[idx]
-        im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        ax.set_title(f'Confusion Matrix - {name}')
-        plt.colorbar(im, ax=ax)
-        
-        # 添加数值标签
-        thresh = cm.max() / 2.
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                ax.text(j, i, format(cm[i, j], 'd'),
-                       ha="center", va="center",
-                       color="white" if cm[i, j] > thresh else "black")
-        
-        ax.set_xlabel('Predicted')
-        ax.set_ylabel('True')
-        
-        print("Model:", name)
-        print("模型在训练集上的评估结果：")
-        print("Accuracy:", accuracy_train)
-        print("Precision:", precision_train)
-        print("Recall:", recall_train)
-        print("F1 Score:", f1_train)
-        print()
-        print("模型在测试集上的评估结果：")
-        print("Accuracy:", accuracy_test)
-        print("Precision:", precision_test)
-        print("Recall:", recall_test)
-        print("F1 Score:", f1_test)
-        print("\n分类报告:")
-        print(classification_report(y_test, predictions, zero_division=0))
-        print('-'*50)
-        time_end = time.time()
-        print(f"训练和预测时间: {time_end - time_start:.2f}秒")
-        print()
-
-# 使用全部的特征进行训练并评估分类模型
-print("Classification Models Evaluation with all features:")
-if flag_standard_classification:
-    scaler2 = StandardScaler()
-    X_train2 = scaler2.fit_transform(X_train)
-    X_test2 = scaler2.transform(X_test)
-    
-classification_train(X_train=X_train2, X_test=X_test2, models=classification_models)
+        return risk_score, risk_class_prob
