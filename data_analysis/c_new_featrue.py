@@ -197,7 +197,7 @@ criterion = nn.BCELoss()
 optimizer = optim.AdamW(parameters=model.parameters(), learning_rate=0.001, weight_decay=1e-4)
 
 # 训练参数
-num_epochs = 20  # 先减少epoch数量，查看训练效果
+num_epochs = 5  # 先减少epoch数量，查看训练效果
 train_losses = []
 val_losses = []
 train_accuracies = []
